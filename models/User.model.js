@@ -15,6 +15,18 @@ const userSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  googleAccessToken: {
+    type: String,
+    default: null
+  },
+  googleRefreshToken: {
+    type: String,
+    default: null
+  },
+  gmailConnected: {
+    type: Boolean,
+    default: false
+  },
   isActive: {
     type: Boolean,
     default: true

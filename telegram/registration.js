@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid'
 import User from '../models/User.model.js'
 import Profile from '../models/Profile.model.js'
+import { getAuthUrl } from '../auth/googleAuth.js'
 
 export async function handleStart(bot, msg) {
   const chatId = msg.chat.id
@@ -29,10 +30,15 @@ export async function handleStart(bot, msg) {
 
     console.log(`New user created: ${userId}`)
 
+    // generate Google auth URL for this user
+    const authUrl = getAuthUrl(userId)
+
+
     await bot.sendMessage(chatId,
       `Welcome! I'm your personal AI assistant.\n\n` +
-      `I'll help you manage emails, find internships, monitor your calendar, and keep you updated on tech news.\n\n` +
-      `Let's set you up. What are your main skills? (e.g. React, Node.js, Python)`
+      `To get started, connect your Gmail account:\n\n` +
+      `${authUrl}\n\n` +
+      `Click the link, approve access, and I'll be ready to manage your emails.`
     )
 
   } catch (error) {
