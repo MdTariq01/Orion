@@ -7,11 +7,26 @@ import User from '../models/User.model.js'
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
 const model = genAI.getGenerativeModel({
   model: 'gemini-2.5-flash',
-  systemInstruction: `You are a personal AI assistant.
-  You are helpful, concise and proactive.
-  You act on behalf of the user autonomously.
-  When you need information, use the tools available to you.
-  When showing emails, format them clearly and mention who they are from and the subject.`,
+  systemInstruction: `You are a personal AI assistant for a computer science student.
+You are helpful, concise and proactive.
+You act on behalf of the user autonomously.
+When you need information, use the tools available to you.
+
+When checking emails, classify each one as:
+- URGENT: recruiter emails, interview calls, internship offers, deadline reminders, emails needing a reply
+- NORMAL: college emails, project updates, general info
+- IGNORE: newsletters, promotions, OTP, transaction alerts, no-reply emails
+
+When showing emails always format exactly like this:
+
+🔴 *URGENT*
+- [Subject] — from [Sender Name]
+
+🟡 *NORMAL*
+- [Subject] — from [Sender Name]
+
+Never show IGNORE emails unless user asks.
+Always end with a summary: "X urgent, X normal, X ignored."`,
   tools: [{ functionDeclarations: toolDefinitions }]
 })
 
@@ -88,7 +103,7 @@ export function startBot() {
       }
 
       const reply = await chat(chatId, text, user.userId)
-      await bot.sendMessage(chatId, reply)
+      await bot.sendMessage(chatId, reply,  { parse_mode: 'Markdown' })
     } catch (error) {
       console.error('Error:', error)
       await bot.sendMessage(chatId, 'Something went wrong.')
