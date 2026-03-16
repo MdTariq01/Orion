@@ -1,7 +1,9 @@
 import { google } from "googleapis"
 import { getOAuthClient } from "../auth/googleAuth.js"
 import User from '../models/User.model.js'
-
+import { v4 as uuidv4 } from 'uuid'
+import PendingAction from '../models/PendingAction.model.js'
+//this is emailTools.js
 async function getGmailClient(userId) {
     const user = await User.findOne({ userId })
 
@@ -10,6 +12,16 @@ async function getGmailClient(userId) {
         access_token: user.googleAccessToken,
         refresh_token: user.googleRefreshToken
     }) 
+
+      // refresh token if expired
+    const { credentials } = await oauth2Client.refreshAccessToken()
+    oauth2Client.setCredentials(credentials)
+
+    // save new access token
+    await User.findOneAndUpdate(
+      { userId },
+      { googleAccessToken: credentials.access_token }
+    )
 
     return google.gmail({ 
         version: "v1", 
@@ -66,33 +78,77 @@ export async function getEmails(userId , count= 10) {
     }
 }
 
-export async function sendEmail(userId, to, subject, body) {
-  try {
-    const gmail = await getGmailClient(userId)
+export async function sendEmail(user, to, subject, body) {
+  const oauth2Client = getOAuthClient()
+  oauth2Client.setCredentials({
+    access_token: user.googleAccessToken,
+    refresh_token: user.googleRefreshToken
+  })
 
-    // create email in base64 format
-    const email = [
-      `To: ${to}`,
-      `Subject: ${subject}`,
-      'Content-Type: text/plain; charset=utf-8',
-      '',
-      body
-    ].join('\n')
+  const gmail = google.gmail({ version: 'v1', auth: oauth2Client })
 
-    const encodedEmail = Buffer.from(email).toString('base64')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=+$/, '')
+  const message = [
+    `To: ${to}`,
+    `Subject: ${subject}`,
+    ``,
+    body
+  ].join('\n')
 
-    await gmail.users.messages.send({
-      userId: 'me',
-      requestBody: { raw: encodedEmail }
-    })
+  const encodedMessage = Buffer.from(message)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '')
 
-    return { success: true, message: `Email sent to ${to}` }
+  await gmail.users.messages.send({
+    userId: 'me',
+    requestBody: { raw: encodedMessage }
+  })
 
-    } catch (error) {
-    console.error('Send email error:', error)
-    return { error: error.message }
+  console.log(`Email sent to ${to}`)
+}
+
+export async function requestSendEmail(userId, telegramChatId, to, subject, body, context, bot) {
+  const actionId = uuidv4()
+
+  // save pending action to MongoDB
+  await PendingAction.create({
+    actionId,
+    userId,
+    type: 'send_email',
+    payload: { to, subject, body },
+    context
+  })
+
+  // send approval message with Yes/No buttons
+  const message = await bot.sendMessage(
+    telegramChatId,
+    `📧 *I want to send this email:*\n\n` +
+    `*To:* ${to}\n` +
+    `*Subject:* ${subject}\n\n` +
+    `${body}\n\n` +
+    `*Reason:* ${context}\n\n` +
+    `Should I send it?`,
+    {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '✅ Yes, Send', callback_data: `approve_${actionId}` },
+          { text: '❌ No, Cancel', callback_data: `reject_${actionId}` }
+        ]]
+      }
+    }
+  )
+
+  // save telegram message id for later editing
+  await PendingAction.findOneAndUpdate(
+    { actionId },
+    { telegramMessageId: message.message_id }
+  )
+
+  return {
+    status: 'pending_approval',
+    message: 'Email approval request sent to user'
   }
 }
+

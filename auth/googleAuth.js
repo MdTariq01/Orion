@@ -24,7 +24,8 @@ export function getAuthUrl(userId) {
   const url = oauth2Client.generateAuthUrl({
     access_type: 'offline',
     scope: scopes,
-    state: userId
+    state: userId,
+    prompt: 'consent' 
   })
 
   return url
@@ -39,14 +40,16 @@ export function startAuthServer(bot) {
         const oauth2Client = getOAuthClient()
         const { tokens } = await oauth2Client.getToken(code)
 
-        await User.findOneAndUpdate(
-          { userId },
-          {
-            googleAccessToken: tokens.access_token,
-            googleRefreshToken: tokens.refresh_token,
-            gmailConnected: true
-          }
-        )
+        const updateData = {
+          googleAccessToken: tokens.access_token,
+          gmailConnected: true
+        }
+
+        if (tokens.refresh_token) {
+            updateData.googleRefreshToken = tokens.refresh_token
+        }
+          
+        await User.findOneAndUpdate({ userId }, updateData)
 
         console.log(`Gmail connected for user: ${userId}`)
 

@@ -16,10 +16,10 @@ const profileSchema = new mongoose.Schema({
     default: 'fresher'
   },
   jobPreferences: {
-    type: {
-      type: [String],
-      default: ['internship']
-    },
+    jobType: {
+    type: [String],
+    default: ['internship']
+  },
     remote: {
       type: Boolean,
       default: true
