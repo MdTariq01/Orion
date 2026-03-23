@@ -10,7 +10,7 @@ import { sendEmail } from '../tools/emailTools.js'
 //this is bot.js
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
 const model = genAI.getGenerativeModel({
-  model: 'gemini-2.5-flash',
+  model: 'gemini-2.0-flash',
   systemInstruction: `You are a personal AI assistant for a computer science student.
 You are helpful, concise and proactive.
 You act on behalf of the user autonomously.
