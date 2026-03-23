@@ -1,5 +1,5 @@
 import TelegramBot from 'node-telegram-bot-api'
-import { GoogleGenerativeAI } from '@google/generative-ai'
+import { Ollama } from 'ollama'
 import { toolDefinitions } from '../config/tools.js'
 import { executeTool } from '../core/toolExecutor.js'
 import User from '../models/User.model.js'
@@ -8,111 +8,100 @@ import ActionLog from '../models/ActionLog.model.js'
 import { sendEmail } from '../tools/emailTools.js'
 
 //this is bot.js
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
-const model = genAI.getGenerativeModel({
-  model: 'gemini-2.0-flash',
-  systemInstruction: `You are a personal AI assistant for a computer science student.
-You are helpful, concise and proactive.
-You act on behalf of the user autonomously.
-When you need information, use the tools available to you.
+const ollama = new Ollama({ host: 'http://localhost:11434' })
+const SYSTEM_PROMPT = `You are Jarvis, a personal AI assistant.
 
-You can help with anything — answer questions, have conversations, help with code, and also manage emails.
+STRICT EMAIL RULES — follow exactly:
 
-Only check emails when the user explicitly asks about emails.
+URGENT = only if a real individual human wrote this email personally to you and is waiting for your reply. Examples: a recruiter named "Rahul" emailing you directly, a professor messaging you, a friend asking something.
 
-When classifying emails use these STRICT rules:
+NORMAL = official automated emails from your college, GitHub notifications about your own repos.
 
-🔴 URGENT (only these):
-- A real human personally emailed you (not automated)
-- Someone is waiting for YOUR reply
-- Interview scheduled or interview invite from a real person
-- Offer letter or selection result
-- Payment due or account issue needing action
-- College deadline or exam result
+IGNORE = everything else. This includes ALL of these no matter what they say:
+- Anything from Internshala, LinkedIn, Naukri, Indeed, Unstop, Dare2Compete
+- Any email with noreply@ or no-reply@ in the sender
+- Job alerts, hiring digests, "X is hiring" emails
+- Newsletters, promotional offers, OTP, transaction alerts
+- Any email sent to thousands of people at once
 
-🟡 NORMAL (only these):
-- College official announcements
-- GitHub notifications about your own repos
-- Direct messages from real people that don't need urgent reply
+FORMAT your email reply EXACTLY like this, no deviations:
 
-⚪ IGNORE (everything else):
-- LinkedIn job alerts and promotional emails
-- Internshala newsletters and job digests
-- Any email from noreply@ or no-reply@
-- Mass automated emails even if they mention internship or job
-- OTP, transaction alerts, order confirmations
-- Newsletter, digest, weekly roundup emails
-- Anything with "unsubscribe" in footer
-- Promotional offers
-
-KEY RULE: Just because an email mentions "internship" or "job" does NOT make it urgent.
-Only mark URGENT if a real human is personally contacting you and needs a response.
-
-Format emails like:
 🔴 *URGENT*
-- [Subject] — from [Sender Name]
+- Subject — from Sender Name
 
 🟡 *NORMAL*
-- [Subject] — from [Sender Name]
+- Subject — from Sender Name
 
-Never show IGNORE emails unless asked.
-Always end with: "X urgent, X normal, X ignored."`
-,
+_X urgent, X normal, X ignored._
 
-  tools: [{ functionDeclarations: toolDefinitions }]
-})
+Rules:
+- Never show IGNORE emails
+- Never add explanations or comments after each email
+- Never add categories like "(automated)" in the list
+- Just subject and sender, nothing else
+- If 0 urgent emails write: _0 urgent, X normal, X ignored._`
 
 let bot
 const conversations = {}
 
 async function chat(chatId, userMessage, userId) {
-    if (!conversations[chatId]) {
-    conversations[chatId] = model.startChat({ history: [] })
+  if (!conversations[chatId]) {
+    conversations[chatId] = []
   }
 
-  const chatSession = conversations[chatId]
-  let result
-  let retries = 3
+  conversations[chatId].push({
+    role: 'user',
+    content: userMessage
+  })
 
-  while (retries > 0) {
-    try {
-      result = await chatSession.sendMessage(userMessage)
-      break
-    } catch (error) {
-      if (error.status === 429) {
-        console.log('Rate limited, waiting 30s...')
-        await new Promise(r => setTimeout(r, 30000))
-        retries--
-      } else {
-        throw error
-      }
-    }
+  // keep history trim
+  if (conversations[chatId].length > 40) {
+    conversations[chatId] = conversations[chatId].slice(-30)
   }
 
+  let messages = [
+    { role: 'system', content: SYSTEM_PROMPT },
+    ...conversations[chatId]
+  ]
+
+    
+    const tools = toolDefinitions
+
+  // ReAct loop
   while (true) {
-    const candidate = result.response.candidates[0]
-    const parts = candidate.content.parts
-    const toolCallPart = parts.find(p => p.functionCall)
+    const response = await ollama.chat({
+      model: 'qwen3:1.7b',
+      messages,
+      tools,
+      stream: false
+    })
 
-    if (!toolCallPart) {
-      return result.response.text()
+    const msg = response.message    
+  
+    // no tool call — return reply
+    if (!msg.tool_calls || msg.tool_calls.length === 0) {
+      const reply = msg.content
+      conversations[chatId].push({ role: 'assistant', content: reply })
+      return reply
     }
 
-    const toolName = toolCallPart.functionCall.name
-    const toolArgs = toolCallPart.functionCall.args
+    // tool call requested
+    const toolCall = msg.tool_calls[0]
+    const toolName = toolCall.function.name
+    const toolArgs = toolCall.function.arguments
 
-    console.log(`Gemini calling tool: ${toolName}`)
+    console.log(`Ollama calling tool: ${toolName}`)
 
     const toolResult = await executeTool(toolName, toolArgs, userId)
 
     console.log(`Tool result:`, toolResult)
 
-    result = await chatSession.sendMessage([{
-      functionResponse: {
-        name: toolName,
-        response: toolResult
-      }
-    }])
+    // add to message history
+    messages.push(msg)
+    messages.push({
+      role: 'tool',
+      content: JSON.stringify(toolResult)
+    })
   }
 }
 

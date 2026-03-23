@@ -3,16 +3,14 @@ import User from '../models/User.model.js'
 import { getEmails } from '../tools/emailTools.js'
 import { getCurrentTime } from '../tools/systemTools.js'
 import { getBot } from '../telegram/bot.js'
-import { GoogleGenerativeAI } from '@google/generative-ai'
+import { Ollama } from 'ollama'
 import PendingAction from '../models/PendingAction.model.js'
 import ActionLog from '../models/ActionLog.model.js'
 import { requestSendEmail } from '../tools/emailTools.js'
 
-const genAi = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
+const ollama = new Ollama({ host: 'http://localhost:11434' })
 
-const brainModel = genAi.getGenerativeModel({
-    model: "gemini-2.0-flash",
-    systemInstruction: `You are an autonomous AI agent running a background check for a user.
+const BRAIN_PROMPT = `You are an autonomous AI agent running a background check for a user.
 
 Your job is to look at the user's current situation and decide if anything needs their attention RIGHT NOW.
 
@@ -30,8 +28,10 @@ If nothing needs attention, respond with exactly: NO_ACTION
 
 If something needs attention, respond with a short Telegram message starting with 🧠
 
-Keep messages under 3 lines. Be specific. Don't be noisy.`
-})
+Keep messages under 3 lines. Be specific. Don't be noisy.
+
+and also tell the user like you are a person not like a summary like the user got this.... like this
+`
 
 async function runBrainForUser(user) {
     try{
@@ -62,8 +62,16 @@ async function runBrainForUser(user) {
 
             User profile: Computer science student looking for internships.`
 
-    const result = await brainModel.generateContent(context)
-    const response = result.response.text().trim()
+    // ollama
+      const result = await ollama.chat({
+        model: 'qwen3:1.7b',
+        messages: [
+          { role: 'system', content: BRAIN_PROMPT },
+          { role: 'user', content: context }
+        ],
+        stream: false
+      })
+      const response = result.message.content.trim()
 
     console.log(`Brain result for ${user.userId}: ${response}`)
 
