@@ -1,4 +1,5 @@
 import TelegramBot from 'node-telegram-bot-api'
+import { getAuthUrl } from '../auth/googleAuth.js'
 import { Ollama } from 'ollama'
 import { toolDefinitions } from '../config/tools.js'
 import { executeTool } from '../core/toolExecutor.js'
@@ -80,7 +81,7 @@ async function chat(chatId, userMessage, userId) {
   
     // no tool call — return reply
     if (!msg.tool_calls || msg.tool_calls.length === 0) {
-      const reply = msg.content
+      const reply = msg.content.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
       conversations[chatId].push({ role: 'assistant', content: reply })
       return reply
     }
@@ -131,6 +132,9 @@ export function startBot() {
 
   console.log(`Message from ${chatId}: ${text}`)
   bot.sendChatAction(chatId, 'typing')
+  const typingInterval = setInterval(() => {
+    bot.sendChatAction(chatId, 'typing')
+  }, 4000)
 
     try {
     // get user from DB
@@ -149,6 +153,7 @@ export function startBot() {
     }
 
     const reply = await chat(chatId, text, user.userId)
+    clearInterval(typingInterval)
     
     // reset conversation if too long
     if (conversations[chatId] && conversations[chatId].history?.length > 40) {
@@ -162,6 +167,7 @@ export function startBot() {
     }
 
   } catch (error) {
+    clearInterval(typingInterval)
     console.error('Error:', error)
     await bot.sendMessage(chatId, 'Something went wrong.')
   }
@@ -258,6 +264,38 @@ bot.onText(/\/testemail/, async (msg) => {
   } catch (error) {
     console.error('Test email error:', error)
     await bot.sendMessage(chatId, 'Error: ' + error.message)
+  }
+})
+
+bot.onText(/\/reconnect/, async (msg) => {
+  const chatId = msg.chat.id
+
+  try {
+    const user = await User.findOne({ telegramChatId: String(chatId) })
+
+    if (!user) {
+      await bot.sendMessage(chatId, 'Please send /start first.')
+      return
+    }
+
+    // clear old tokens
+    await User.findOneAndUpdate(
+      { telegramChatId: String(chatId) },
+      {
+        $unset: { googleAccessToken: 1, googleRefreshToken: 1 },
+        $set: { gmailConnected: false }
+      }
+    )
+
+    const authUrl = getAuthUrl(user.userId)
+
+    await bot.sendMessage(chatId,
+      `🔄 Let's reconnect your Gmail.\n\nClick the link below and approve access:\n\n${authUrl}`
+    )
+
+  } catch (error) {
+    console.error('Reconnect error:', error)
+    await bot.sendMessage(chatId, 'Something went wrong. Try again.')
   }
 })
 
