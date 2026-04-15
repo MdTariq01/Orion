@@ -1,4 +1,4 @@
-# My-Agent - AI-Powered Personal Assistant
+# Orion - AI-Powered Personal Assistant
 
 An autonomous AI agent that integrates with Telegram, Google Calendar, Gmail, and local LLM to act as your personal assistant. The agent continuously monitors your emails, calendar events, and tasks, using AI to intelligently notify you of important updates and help you manage your daily workflow.
 
@@ -38,6 +38,10 @@ An autonomous AI agent that integrates with Telegram, Google Calendar, Gmail, an
 - Google OAuth 2.0 authentication
 - Secures access to Google Calendar and Gmail APIs
 - Manages user authentication and token refresh
+
+![alt text](image.png)
+
+
 
 ### Data Models
 
@@ -339,11 +343,10 @@ npm run dev  # Start with hot-reload (nodemon)
 
 ## License
 
-ISC
+MIT
 
 ## Author
-
-Your Name/Team
+Md Tariq
 
 ---
 
