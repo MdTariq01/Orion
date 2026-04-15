@@ -7,6 +7,7 @@ import User from '../models/User.model.js'
 import PendingAction from '../models/PendingAction.model.js'
 import ActionLog from '../models/ActionLog.model.js'
 import { sendEmail } from '../tools/emailTools.js'
+import { createEvent, deleteEvent } from '../tools/calendarTools.js'
 
 //this is bot.js
 const ollama = new Ollama({ host: 'http://localhost:11434' })
@@ -65,8 +66,7 @@ async function chat(chatId, userMessage, userId) {
     ...conversations[chatId]
   ]
 
-    
-    const tools = toolDefinitions
+  const tools = toolDefinitions
 
   // ReAct loop
   while (true) {
@@ -77,8 +77,8 @@ async function chat(chatId, userMessage, userId) {
       stream: false
     })
 
-    const msg = response.message    
-  
+    const msg = response.message
+
     // no tool call — return reply
     if (!msg.tool_calls || msg.tool_calls.length === 0) {
       const reply = msg.content.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
@@ -111,9 +111,9 @@ export function startBot() {
   if (!token) throw new Error('TELEGRAM_TOKEN is missing!')
 
   bot = new TelegramBot(token, {
-  polling: {
-    params: {
-      allowed_updates: ['message', 'callback_query']
+    polling: {
+      params: {
+        allowed_updates: ['message', 'callback_query']
       }
     }
   })
@@ -124,180 +124,209 @@ export function startBot() {
   })
 
   bot.on('message', async (msg) => {
-  if (!msg.text) return
-  if (msg.text.startsWith('/')) return
+    if (!msg.text) return
+    if (msg.text.startsWith('/')) return
 
-  const chatId = msg.chat.id
-  const text = msg.text
+    const chatId = msg.chat.id
+    const text = msg.text
 
-  console.log(`Message from ${chatId}: ${text}`)
-  bot.sendChatAction(chatId, 'typing')
-  const typingInterval = setInterval(() => {
+    console.log(`Message from ${chatId}: ${text}`)
     bot.sendChatAction(chatId, 'typing')
-  }, 4000)
+    const typingInterval = setInterval(() => {
+      bot.sendChatAction(chatId, 'typing')
+    }, 4000)
 
     try {
-    // get user from DB
-    const user = await User.findOne({ telegramChatId: String(chatId) })
+      const user = await User.findOne({ telegramChatId: String(chatId) })
 
-    // if no user tell them to run /start
-    if (!user) {
-      await bot.sendMessage(chatId, 'Please send /start to set up your account.')
-      return
-    }
-
-    // if gmail not connected remind them
-    if (!user.gmailConnected) {
-      await bot.sendMessage(chatId, 'Your Gmail is not connected yet. Please use the link sent earlier or send /start again.')
-      return
-    }
-
-    const reply = await chat(chatId, text, user.userId)
-    clearInterval(typingInterval)
-    
-    // reset conversation if too long
-    if (conversations[chatId] && conversations[chatId].history?.length > 40) {
-      delete conversations[chatId]
-    }
-
-    try {
-      await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' })
-    } catch {
-      await bot.sendMessage(chatId, reply) // fallback without markdown
-    }
-
-  } catch (error) {
-    clearInterval(typingInterval)
-    console.error('Error:', error)
-    await bot.sendMessage(chatId, 'Something went wrong.')
-  }
-})
-
-  // handle yes/no button clicks
-  bot.on('callback_query', async (query) => {
-      console.log('Button clicked:', query.data) 
-  const chatId = query.message.chat.id
-  const data = query.data
-
-  if (data.startsWith('approve_') || data.startsWith('reject_')) {
-    const actionId = data.replace('approve_', '').replace('reject_', '')
-    const approved = data.startsWith('approve_')
-
-    try {
-      const pending = await PendingAction.findOne({ actionId })
-
-      if (!pending || pending.status !== 'awaiting') {
-        await bot.answerCallbackQuery(query.id, { text: 'Action already handled.' })
+      if (!user) {
+        await bot.sendMessage(chatId, 'Please send /start to set up your account.')
         return
       }
 
-      if (approved) {
-        // get user tokens and send the email
-        const user = await User.findOne({ userId: pending.userId })
-        await sendEmail(user, pending.payload.to, pending.payload.subject, pending.payload.body)
-
-        await PendingAction.findOneAndUpdate({ actionId }, { status: 'approved' })
-
-        await ActionLog.create({
-          userId: pending.userId,
-          action: 'send_email',
-          payload: pending.payload,
-          result: { success: true, message: 'Email sent' },
-          approvedBy: 'user',
-          pendingActionId: actionId
-        })
-
-        // edit the message to show it was sent
-        await bot.editMessageText(
-          `✅ *Email sent successfully!*\n\nTo: ${pending.payload.to}\nSubject: ${pending.payload.subject}`,
-          {
-            chat_id: chatId,
-            message_id: query.message.message_id,
-            parse_mode: 'Markdown'
-          }
-        )
-
-      } else {
-        await PendingAction.findOneAndUpdate({ actionId }, { status: 'rejected' })
-
-        await bot.editMessageText(
-          `❌ *Email cancelled.*`,
-          {
-            chat_id: chatId,
-            message_id: query.message.message_id,
-            parse_mode: 'Markdown'
-          }
-        )
+      if (!user.gmailConnected) {
+        await bot.sendMessage(chatId, 'Your account is not connected yet. Please use the link sent earlier or send /start again.')
+        return
       }
 
-      await bot.answerCallbackQuery(query.id)
+      const reply = await chat(chatId, text, user.userId)
+      clearInterval(typingInterval)
+
+      // reset conversation if too long
+      if (conversations[chatId] && conversations[chatId].history?.length > 40) {
+        delete conversations[chatId]
+      }
+
+      try {
+        await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' })
+      } catch {
+        await bot.sendMessage(chatId, reply)
+      }
 
     } catch (error) {
-      console.error('Callback error:', error)
-      await bot.answerCallbackQuery(query.id, { text: 'Something went wrong.' })
+      clearInterval(typingInterval)
+      console.error('Error:', error)
+      await bot.sendMessage(chatId, 'Something went wrong.')
     }
-  }
-})
+  })
 
-bot.onText(/\/testemail/, async (msg) => {
-  const chatId = msg.chat.id
+  // handle yes/no button clicks
+  bot.on('callback_query', async (query) => {
+    console.log('Button clicked:', query.data)
+    const chatId = query.message.chat.id
+    const data = query.data
 
-  try {
-    const user = await User.findOne({ telegramChatId: String(chatId) })
-    if (!user) {
-      await bot.sendMessage(chatId, 'Please /start first.')
-      return
-    }
+    if (data.startsWith('approve_') || data.startsWith('reject_')) {
+      const actionId = data.replace('approve_', '').replace('reject_', '')
+      const approved = data.startsWith('approve_')
 
-    const { requestSendEmail } = await import('../tools/emailTools.js')
+      try {
+        const pending = await PendingAction.findOne({ actionId })
 
-    await requestSendEmail(
-      user.userId,
-      String(chatId),
-      user.email || 'officialmdtariq01@gmail.com', // sends to yourself
-      'Test Email from My Agent',
-      'Hi,\n\nThis is a test email sent by your AI agent.\n\nIf you see this, the approval flow is working!\n\nRegards,\nYour Agent',
-      'Testing the email approval system',
-      bot
-    )
+        if (!pending || pending.status !== 'awaiting') {
+          await bot.answerCallbackQuery(query.id, { text: 'Action already handled.' })
+          return
+        }
 
-  } catch (error) {
-    console.error('Test email error:', error)
-    await bot.sendMessage(chatId, 'Error: ' + error.message)
-  }
-})
+        const user = await User.findOne({ userId: pending.userId })
 
-bot.onText(/\/reconnect/, async (msg) => {
-  const chatId = msg.chat.id
+        if (approved) {
 
-  try {
-    const user = await User.findOne({ telegramChatId: String(chatId) })
+          if (pending.type === 'send_email') {
+            await sendEmail(user, pending.payload.to, pending.payload.subject, pending.payload.body)
 
-    if (!user) {
-      await bot.sendMessage(chatId, 'Please send /start first.')
-      return
-    }
+            await PendingAction.findOneAndUpdate({ actionId }, { status: 'approved' })
 
-    // clear old tokens
-    await User.findOneAndUpdate(
-      { telegramChatId: String(chatId) },
-      {
-        $unset: { googleAccessToken: 1, googleRefreshToken: 1 },
-        $set: { gmailConnected: false }
+            await ActionLog.create({
+              userId: pending.userId,
+              action: 'send_email',
+              payload: pending.payload,
+              result: { success: true, message: 'Email sent' },
+              approvedBy: 'user',
+              pendingActionId: actionId
+            })
+
+            await bot.editMessageText(
+              `✅ *Email sent successfully!*\n\nTo: ${pending.payload.to}\nSubject: ${pending.payload.subject}`,
+              { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' }
+            )
+
+          } else if (pending.type === 'create_event') {
+            const { title, date, startTime, endTime, description, location } = pending.payload
+            await createEvent(user, title, date, startTime, endTime, description, location)
+
+            await PendingAction.findOneAndUpdate({ actionId }, { status: 'approved' })
+
+            await ActionLog.create({
+              userId: pending.userId,
+              action: 'create_event',
+              payload: pending.payload,
+              result: { success: true, message: 'Event created' },
+              approvedBy: 'user',
+              pendingActionId: actionId
+            })
+
+            await bot.editMessageText(
+              `✅ *Event created!*\n\n*${title}*\n${date} at ${startTime}`,
+              { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' }
+            )
+
+          } else if (pending.type === 'delete_event') {
+            await deleteEvent(user, pending.payload.eventId)
+
+            await PendingAction.findOneAndUpdate({ actionId }, { status: 'approved' })
+
+            await ActionLog.create({
+              userId: pending.userId,
+              action: 'delete_event',
+              payload: pending.payload,
+              result: { success: true, message: 'Event deleted' },
+              approvedBy: 'user',
+              pendingActionId: actionId
+            })
+
+            await bot.editMessageText(
+              `✅ *Event deleted:* ${pending.payload.title}`,
+              { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' }
+            )
+          }
+
+        } else {
+          await PendingAction.findOneAndUpdate({ actionId }, { status: 'rejected' })
+
+          await bot.editMessageText(
+            `❌ *Cancelled.*`,
+            { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' }
+          )
+        }
+
+        await bot.answerCallbackQuery(query.id)
+
+      } catch (error) {
+        console.error('Callback error:', error)
+        await bot.answerCallbackQuery(query.id, { text: 'Something went wrong.' })
       }
-    )
+    }
+  })
 
-    const authUrl = getAuthUrl(user.userId)
+  bot.onText(/\/testemail/, async (msg) => {
+    const chatId = msg.chat.id
 
-    await bot.sendMessage(chatId,
-      `🔄 Let's reconnect your Gmail.\n\nClick the link below and approve access:\n\n${authUrl}`
-    )
+    try {
+      const user = await User.findOne({ telegramChatId: String(chatId) })
+      if (!user) {
+        await bot.sendMessage(chatId, 'Please /start first.')
+        return
+      }
 
-  } catch (error) {
-    console.error('Reconnect error:', error)
-    await bot.sendMessage(chatId, 'Something went wrong. Try again.')
-  }
-})
+      const { requestSendEmail } = await import('../tools/emailTools.js')
+
+      await requestSendEmail(
+        user.userId,
+        String(chatId),
+        user.email || 'officialmdtariq01@gmail.com',
+        'Test Email from My Agent',
+        'Hi,\n\nThis is a test email sent by your AI agent.\n\nIf you see this, the approval flow is working!\n\nRegards,\nYour Agent',
+        'Testing the email approval system',
+        bot
+      )
+
+    } catch (error) {
+      console.error('Test email error:', error)
+      await bot.sendMessage(chatId, 'Error: ' + error.message)
+    }
+  })
+
+  bot.onText(/\/reconnect/, async (msg) => {
+    const chatId = msg.chat.id
+
+    try {
+      const user = await User.findOne({ telegramChatId: String(chatId) })
+
+      if (!user) {
+        await bot.sendMessage(chatId, 'Please send /start first.')
+        return
+      }
+
+      await User.findOneAndUpdate(
+        { telegramChatId: String(chatId) },
+        {
+          $unset: { googleAccessToken: 1, googleRefreshToken: 1 },
+          $set: { gmailConnected: false }
+        }
+      )
+
+      const authUrl = getAuthUrl(user.userId)
+
+      await bot.sendMessage(chatId,
+        `🔄 Let's reconnect your Gmail.\n\nClick the link below and approve access:\n\n${authUrl}`
+      )
+
+    } catch (error) {
+      console.error('Reconnect error:', error)
+      await bot.sendMessage(chatId, 'Something went wrong. Try again.')
+    }
+  })
 
   bot.on('polling_error', (error) => {
     console.error('Telegram error:', error.code)

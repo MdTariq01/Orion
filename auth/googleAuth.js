@@ -18,7 +18,9 @@ export function getAuthUrl(userId) {
   const scopes = [
     'https://www.googleapis.com/auth/gmail.readonly',
     'https://www.googleapis.com/auth/gmail.send',
-    'https://www.googleapis.com/auth/gmail.modify'
+    'https://www.googleapis.com/auth/gmail.modify',
+     'https://www.googleapis.com/auth/calendar' ,
+     'https://www.googleapis.com/auth/tasks'
   ]
 
   const url = oauth2Client.generateAuthUrl({
@@ -56,10 +58,10 @@ export function startAuthServer(bot) {
         const user = await User.findOne({ userId })
         await bot.sendMessage(
           user.telegramChatId,
-          '✅ Gmail connected successfully! I can now read and send emails on your behalf.'
+          '✅Connected successfully! I can now read and send emails on your behalf.'
         )
 
-        res.send('Gmail connected! You can close this tab and go back to Telegram.')
+        res.send('Account connected! You can close this tab and go back to Telegram.')
 
       } catch (error) {
         console.error('OAuth error:', error)
