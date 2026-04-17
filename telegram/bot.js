@@ -6,11 +6,12 @@ import { executeTool } from '../core/toolExecutor.js'
 import User from '../models/User.model.js'
 import PendingAction from '../models/PendingAction.model.js'
 import ActionLog from '../models/ActionLog.model.js'
+import Conversation from '../models/Conversation.model.js'
 import { sendEmail } from '../tools/emailTools.js'
 import { createEvent, deleteEvent } from '../tools/calendarTools.js'
 
-//this is bot.js
 const ollama = new Ollama({ host: 'http://localhost:11434' })
+
 const SYSTEM_PROMPT = `You are Jarvis, a personal AI assistant.
 
 STRICT EMAIL RULES — follow exactly:
@@ -43,46 +44,75 @@ Rules:
 - Just subject and sender, nothing else
 - If 0 urgent emails write: _0 urgent, X normal, X ignored._`
 
+const MAX_HISTORY = 30
+const MAX_TOOL_ITERATIONS = 10
+
 let bot
-const conversations = {}
+
+async function getHistory(chatId) {
+  try {
+    const conv = await Conversation.findOne({ telegramChatId: String(chatId) })
+    return conv ? conv.messages : []
+  } catch (err) {
+    console.error('Failed to load conversation history:', err.message)
+    return []
+  }
+}
+
+async function saveHistory(chatId, messages) {
+  try {
+    await Conversation.findOneAndUpdate(
+      { telegramChatId: String(chatId) },
+      {
+        messages: messages.slice(-MAX_HISTORY),
+        updatedAt: new Date()
+      },
+      { upsert: true, new: true }
+    )
+  } catch (err) {
+    console.error('Failed to save conversation history:', err.message)
+  }
+}
 
 async function chat(chatId, userMessage, userId) {
-  if (!conversations[chatId]) {
-    conversations[chatId] = []
-  }
+  // load history from DB
+  const history = await getHistory(chatId)
 
-  conversations[chatId].push({
-    role: 'user',
-    content: userMessage
-  })
-
-  // keep history trim
-  if (conversations[chatId].length > 40) {
-    conversations[chatId] = conversations[chatId].slice(-30)
-  }
+  history.push({ role: 'user', content: userMessage })
 
   let messages = [
     { role: 'system', content: SYSTEM_PROMPT },
-    ...conversations[chatId]
+    ...history
   ]
 
-  const tools = toolDefinitions
+  let iterations = 0
 
   // ReAct loop
-  while (true) {
-    const response = await ollama.chat({
-      model: 'qwen3:1.7b',
-      messages,
-      tools,
-      stream: false
-    })
+  while (iterations < MAX_TOOL_ITERATIONS) {
+    iterations++
+
+    let response
+    try {
+      response = await ollama.chat({
+        model: 'qwen3:1.7b',
+        messages,
+        tools: toolDefinitions,
+        stream: false
+      })
+    } catch (err) {
+      console.error('Ollama error:', err.message)
+      throw new Error('The AI model is unavailable. Please try again in a moment.')
+    }
 
     const msg = response.message
 
-    // no tool call — return reply
+    // no tool call — final reply
     if (!msg.tool_calls || msg.tool_calls.length === 0) {
       const reply = msg.content.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
-      conversations[chatId].push({ role: 'assistant', content: reply })
+
+      history.push({ role: 'assistant', content: reply })
+      await saveHistory(chatId, history)
+
       return reply
     }
 
@@ -91,19 +121,27 @@ async function chat(chatId, userMessage, userId) {
     const toolName = toolCall.function.name
     const toolArgs = toolCall.function.arguments
 
-    console.log(`Ollama calling tool: ${toolName}`)
+    console.log(`Calling tool: ${toolName}`, toolArgs)
 
-    const toolResult = await executeTool(toolName, toolArgs, userId)
+    let toolResult
+    try {
+      toolResult = await executeTool(toolName, toolArgs, userId)
+    } catch (err) {
+      console.error(`Tool "${toolName}" failed:`, err.message)
+      toolResult = { error: true, message: `Tool "${toolName}" failed: ${err.message}` }
+    }
 
     console.log(`Tool result:`, toolResult)
 
-    // add to message history
     messages.push(msg)
     messages.push({
       role: 'tool',
       content: JSON.stringify(toolResult)
     })
   }
+
+  // hit iteration limit
+  throw new Error('The agent got stuck in a loop. Please try rephrasing your request.')
 }
 
 export function startBot() {
@@ -123,6 +161,17 @@ export function startBot() {
     await handleStart(bot, msg)
   })
 
+  bot.onText(/\/clear/, async (msg) => {
+    const chatId = msg.chat.id
+    try {
+      await Conversation.findOneAndDelete({ telegramChatId: String(chatId) })
+      await bot.sendMessage(chatId, '🧹 Conversation history cleared.')
+    } catch (err) {
+      console.error('Clear history error:', err.message)
+      await bot.sendMessage(chatId, 'Failed to clear history. Try again.')
+    }
+  })
+
   bot.on('message', async (msg) => {
     if (!msg.text) return
     if (msg.text.startsWith('/')) return
@@ -140,22 +189,19 @@ export function startBot() {
       const user = await User.findOne({ telegramChatId: String(chatId) })
 
       if (!user) {
+        clearInterval(typingInterval)
         await bot.sendMessage(chatId, 'Please send /start to set up your account.')
         return
       }
 
       if (!user.gmailConnected) {
+        clearInterval(typingInterval)
         await bot.sendMessage(chatId, 'Your account is not connected yet. Please use the link sent earlier or send /start again.')
         return
       }
 
       const reply = await chat(chatId, text, user.userId)
       clearInterval(typingInterval)
-
-      // reset conversation if too long
-      if (conversations[chatId] && conversations[chatId].history?.length > 40) {
-        delete conversations[chatId]
-      }
 
       try {
         await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' })
@@ -165,8 +211,13 @@ export function startBot() {
 
     } catch (error) {
       clearInterval(typingInterval)
-      console.error('Error:', error)
-      await bot.sendMessage(chatId, 'Something went wrong.')
+      console.error('Handler error:', error.message)
+
+      const userMsg = error.message?.includes('unavailable') || error.message?.includes('loop')
+        ? error.message
+        : 'Something went wrong. Please try again.'
+
+      await bot.sendMessage(chatId, userMsg)
     }
   })
 
@@ -189,6 +240,10 @@ export function startBot() {
         }
 
         const user = await User.findOne({ userId: pending.userId })
+        if (!user) {
+          await bot.answerCallbackQuery(query.id, { text: 'User not found.' })
+          return
+        }
 
         if (approved) {
 
@@ -196,7 +251,6 @@ export function startBot() {
             await sendEmail(user, pending.payload.to, pending.payload.subject, pending.payload.body)
 
             await PendingAction.findOneAndUpdate({ actionId }, { status: 'approved' })
-
             await ActionLog.create({
               userId: pending.userId,
               action: 'send_email',
@@ -216,7 +270,6 @@ export function startBot() {
             await createEvent(user, title, date, startTime, endTime, description, location)
 
             await PendingAction.findOneAndUpdate({ actionId }, { status: 'approved' })
-
             await ActionLog.create({
               userId: pending.userId,
               action: 'create_event',
@@ -235,7 +288,6 @@ export function startBot() {
             await deleteEvent(user, pending.payload.eventId)
 
             await PendingAction.findOneAndUpdate({ actionId }, { status: 'approved' })
-
             await ActionLog.create({
               userId: pending.userId,
               action: 'delete_event',
@@ -253,7 +305,6 @@ export function startBot() {
 
         } else {
           await PendingAction.findOneAndUpdate({ actionId }, { status: 'rejected' })
-
           await bot.editMessageText(
             `❌ *Cancelled.*`,
             { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' }
@@ -263,15 +314,33 @@ export function startBot() {
         await bot.answerCallbackQuery(query.id)
 
       } catch (error) {
-        console.error('Callback error:', error)
+        console.error('Callback error:', error.message)
         await bot.answerCallbackQuery(query.id, { text: 'Something went wrong.' })
       }
     }
   })
 
+  bot.onText(/\/help/, async (msg) => {
+  const chatId = msg.chat.id
+  await bot.sendMessage(chatId, 
+    `*Orion — Commands*\n\n` +
+    `Just type naturally — no commands needed for most things.\n\n` +
+    `*Examples:*\n` +
+    `• "Show my unread emails"\n` +
+    `• "Schedule a meeting tomorrow at 3pm"\n` +
+    `• "What's on my calendar this week"\n` +
+    `• "Send an email to rahul@gmail.com"\n\n` +
+    `*Commands:*\n` +
+    `/start — Set up your account\n` +
+    `/reconnect — Reconnect Gmail\n` +
+    `/clear — Clear conversation history\n` +
+    `/help — Show this message`,
+    { parse_mode: 'Markdown' }
+  )
+})
+
   bot.onText(/\/testemail/, async (msg) => {
     const chatId = msg.chat.id
-
     try {
       const user = await User.findOne({ telegramChatId: String(chatId) })
       if (!user) {
@@ -280,7 +349,6 @@ export function startBot() {
       }
 
       const { requestSendEmail } = await import('../tools/emailTools.js')
-
       await requestSendEmail(
         user.userId,
         String(chatId),
@@ -290,19 +358,16 @@ export function startBot() {
         'Testing the email approval system',
         bot
       )
-
     } catch (error) {
-      console.error('Test email error:', error)
+      console.error('Test email error:', error.message)
       await bot.sendMessage(chatId, 'Error: ' + error.message)
     }
   })
 
   bot.onText(/\/reconnect/, async (msg) => {
     const chatId = msg.chat.id
-
     try {
       const user = await User.findOne({ telegramChatId: String(chatId) })
-
       if (!user) {
         await bot.sendMessage(chatId, 'Please send /start first.')
         return
@@ -317,19 +382,17 @@ export function startBot() {
       )
 
       const authUrl = getAuthUrl(user.userId)
-
       await bot.sendMessage(chatId,
         `🔄 Let's reconnect your Gmail.\n\nClick the link below and approve access:\n\n${authUrl}`
       )
-
     } catch (error) {
-      console.error('Reconnect error:', error)
+      console.error('Reconnect error:', error.message)
       await bot.sendMessage(chatId, 'Something went wrong. Try again.')
     }
   })
 
   bot.on('polling_error', (error) => {
-    console.error('Telegram error:', error.code)
+    console.error('Telegram polling error:', error.code, error.message)
   })
 
   console.log('Telegram bot started')
