@@ -46,11 +46,9 @@ const profileSchema = new mongoose.Schema({
   setupComplete: {
     type: Boolean,
     default: false
-  },
-  updatedAt: {
-    type: Date,
-    default: Date.now
   }
+} , {
+    timestamps: true
 })
 
 export default mongoose.model('Profile', profileSchema)
