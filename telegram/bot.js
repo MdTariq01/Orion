@@ -8,7 +8,7 @@ import PendingAction from '../models/PendingAction.model.js'
 import ActionLog from '../models/ActionLog.model.js'
 import Conversation from '../models/Conversation.model.js'
 import { sendEmail } from '../tools/emailTools.js'
-import { createEvent, deleteEvent } from '../tools/calendarTools.js'
+import { createEvent, deleteEvent, createTask } from '../tools/calendarTools.js'
 
 const ollama = new Ollama({ host: 'http://localhost:11434' })
 
@@ -51,7 +51,10 @@ let bot
 
 async function getHistory(chatId) {
   try {
+    // ── LATENCY: DB history fetch ──
+    const dbStart = Date.now()
     const conv = await Conversation.findOne({ telegramChatId: String(chatId) })
+    console.log(`[LATENCY] db_history=${Date.now() - dbStart}ms`)
     return conv ? conv.messages : []
   } catch (err) {
     console.error('Failed to load conversation history:', err.message)
@@ -67,7 +70,7 @@ async function saveHistory(chatId, messages) {
         messages: messages.slice(-MAX_HISTORY),
         updatedAt: new Date()
       },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: 'after' }
     )
   } catch (err) {
     console.error('Failed to save conversation history:', err.message)
@@ -93,12 +96,14 @@ async function chat(chatId, userMessage, userId) {
 
     let response
     try {
-      response = await ollama.chat({
-        model: 'qwen3:1.7b',
-        messages,
-        tools: toolDefinitions,
-        stream: false
-      })
+      const llmStart = Date.now()
+response = await ollama.chat({
+  model: 'qwen3:1.7b',
+  messages,
+  tools: toolDefinitions,
+  stream: false
+})
+console.log(`[LATENCY] chat_llm_iter${iterations}=${Date.now() - llmStart}ms`)
     } catch (err) {
       console.error('Ollama error:', err.message)
       throw new Error('The AI model is unavailable. Please try again in a moment.')
@@ -173,53 +178,59 @@ export function startBot() {
   })
 
   bot.on('message', async (msg) => {
-    if (!msg.text) return
-    if (msg.text.startsWith('/')) return
-
-    const chatId = msg.chat.id
-    const text = msg.text
-
-    console.log(`Message from ${chatId}: ${text}`)
+  if (!msg.text) return
+  if (msg.text.startsWith('/')) return
+ 
+  const chatId = msg.chat.id
+  const text = msg.text
+ 
+  // ── LATENCY: end-to-end timer starts here ──
+  const e2eStart = Date.now()
+ 
+  console.log(`Message from ${chatId}: ${text}`)
+  bot.sendChatAction(chatId, 'typing')
+  const typingInterval = setInterval(() => {
     bot.sendChatAction(chatId, 'typing')
-    const typingInterval = setInterval(() => {
-      bot.sendChatAction(chatId, 'typing')
-    }, 4000)
-
-    try {
-      const user = await User.findOne({ telegramChatId: String(chatId) })
-
-      if (!user) {
-        clearInterval(typingInterval)
-        await bot.sendMessage(chatId, 'Please send /start to set up your account.')
-        return
-      }
-
-      if (!user.gmailConnected) {
-        clearInterval(typingInterval)
-        await bot.sendMessage(chatId, 'Your account is not connected yet. Please use the link sent earlier or send /start again.')
-        return
-      }
-
-      const reply = await chat(chatId, text, user.userId)
+  }, 4000)
+ 
+  try {
+    const user = await User.findOne({ telegramChatId: String(chatId) })
+ 
+    if (!user) {
       clearInterval(typingInterval)
-
-      try {
-        await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' })
-      } catch {
-        await bot.sendMessage(chatId, reply)
-      }
-
-    } catch (error) {
-      clearInterval(typingInterval)
-      console.error('Handler error:', error.message)
-
-      const userMsg = error.message?.includes('unavailable') || error.message?.includes('loop')
-        ? error.message
-        : 'Something went wrong. Please try again.'
-
-      await bot.sendMessage(chatId, userMsg)
+      await bot.sendMessage(chatId, 'Please send /start to set up your account.')
+      return
     }
-  })
+ 
+    if (!user.gmailConnected) {
+      clearInterval(typingInterval)
+      await bot.sendMessage(chatId, 'Your account is not connected yet. Please use the link sent earlier or send /start again.')
+      return
+    }
+ 
+    const reply = await chat(chatId, text, user.userId)
+    clearInterval(typingInterval)
+ 
+    // ── LATENCY: log before sending reply ──
+    console.log(`[LATENCY] end_to_end=${Date.now() - e2eStart}ms`)
+ 
+    try {
+      await bot.sendMessage(chatId, reply, { parse_mode: 'Markdown' })
+    } catch {
+      await bot.sendMessage(chatId, reply)
+    }
+ 
+  } catch (error) {
+    clearInterval(typingInterval)
+    console.error('Handler error:', error.message)
+ 
+    const userMsg = error.message?.includes('unavailable') || error.message?.includes('loop')
+      ? error.message
+      : 'Something went wrong. Please try again.'
+ 
+    await bot.sendMessage(chatId, userMsg)
+  }
+})
 
   // handle yes/no button clicks
   bot.on('callback_query', async (query) => {
@@ -299,6 +310,26 @@ export function startBot() {
 
             await bot.editMessageText(
               `✅ *Event deleted:* ${pending.payload.title}`,
+              { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' }
+            )
+
+          } else if (pending.type === 'create_task') {
+            const { title, dueDate, notes } = pending.payload
+            await createTask(user, title, dueDate, notes)
+
+            await PendingAction.findOneAndUpdate({ actionId }, { status: 'approved' })
+            await ActionLog.create({
+              userId: pending.userId,
+              action: 'create_task',
+              payload: pending.payload,
+              result: { success: true, message: 'Task created' },
+              approvedBy: 'user',
+              pendingActionId: actionId
+            })
+
+            const dueLine = dueDate ? `\n*Due:* ${dueDate}` : ''
+            await bot.editMessageText(
+              `✅ *Task created!*\n\n*${title}*${dueLine}`,
               { chat_id: chatId, message_id: query.message.message_id, parse_mode: 'Markdown' }
             )
           }

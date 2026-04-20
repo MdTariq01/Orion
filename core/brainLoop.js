@@ -40,7 +40,7 @@ Cross-reference emails and calendar when possible — this is where you add real
 
 function stripThinkTags(text) {
   return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim()
-} 
+}
 
 async function runBrainForUser(user) {
   try {
@@ -51,8 +51,6 @@ async function runBrainForUser(user) {
 
     const bot = getBot()
     const time = getCurrentTime()
-
-    // REMOVED: stray `const users = await User.find(...)` was here
 
     const [emailData, calendarData, tasksData] = await Promise.all([
       user.gmailConnected ? getEmails(user.userId, 5) : Promise.resolve({ emails: [] }),
@@ -91,6 +89,8 @@ ${pending.length > 0
 
 User profile: Computer science student looking for internships.`
 
+    // ── LATENCY: Ollama brain inference ──
+    const brainStart = Date.now()
     const result = await ollama.chat({
       model: 'qwen3:1.7b',
       messages: [
@@ -99,10 +99,10 @@ User profile: Computer science student looking for internships.`
       ],
       stream: false
     })
+    console.log(`[LATENCY] brain_llm=${Date.now() - brainStart}ms`)
 
     const response = stripThinkTags(result.message.content)
     console.log(`Brain result for ${user.userId}: ${response}`)
-
 
     const lower = response.toLowerCase()
     if (
@@ -136,8 +136,14 @@ export async function startBrainLoop() {
   console.log('Brain loop started — thinking every 300 seconds')
 
   let lastRunFailed = false
+  // ── LATENCY: cron interval precision ──
+  let lastTick = null
 
   cron.schedule('*/5 * * * *', async () => {
+    const now = Date.now()
+    if (lastTick) console.log(`[LATENCY] cron_interval=${now - lastTick}ms`)
+    lastTick = now
+
     if (lastRunFailed) {
       console.log('Skipping brain loop — last run hit quota limit')
       lastRunFailed = false
@@ -146,7 +152,7 @@ export async function startBrainLoop() {
 
     console.log('Brain loop firing...')
     try {
-      const users = await User.find({ isActive: true }) // FIXED: removed gmailConnected filter
+      const users = await User.find({ isActive: true })
       for (const user of users) {
         await runBrainForUser(user)
       }

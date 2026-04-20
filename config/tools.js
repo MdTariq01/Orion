@@ -160,5 +160,34 @@ export const toolDefinitions = [
       required: []
       }
     }
+  },
+  {
+    type: "function",
+    function: {
+      name: "request_create_task",
+      description: "Request to create a new task in Google Tasks. Asks user for approval first.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "Title/description of the task"
+          },
+          dueDate: {
+            type: "string",
+            description: "Optional due date in YYYY-MM-DD format"
+          },
+          notes: {
+            type: "string",
+            description: "Optional notes or details for the task"
+          },
+          context: {
+            type: "string",
+            description: "Why are you creating this task"
+          }
+        },
+        required: ["title", "context"]
+      }
+    }
   }
 ]

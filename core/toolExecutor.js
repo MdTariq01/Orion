@@ -2,8 +2,10 @@ import { getCurrentTime } from '../tools/systemTools.js'
 import { getEmails, requestSendEmail, sendEmail } from '../tools/emailTools.js'
 import User from '../models/User.model.js'
 import { getBot } from '../telegram/bot.js'
-import { getCalendarEvents, requestCreateEvent, createEvent, requestDeleteEvent, deleteEvent , getTasks } from '../tools/calendarTools.js'
-
+import {
+  getCalendarEvents, requestCreateEvent, createEvent,
+  requestDeleteEvent, deleteEvent, requestCreateTask, createTask, getTasks
+} from '../tools/calendarTools.js'
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -24,23 +26,30 @@ export async function executeTool(toolName, toolArgs, userId) {
   if (!user) return { error: 'User not found' }
   const bot = getBot()
 
+  // ── LATENCY: per-tool execution timer ──
+  const toolStart = Date.now()
+  let result
+
   switch (toolName) {
     case 'get_current_time':
-      return getCurrentTime()
+      result = getCurrentTime()
+      break
 
     case 'get_emails':
-      return await getEmails(userId, toolArgs.count || 10)
+      result = await getEmails(userId, toolArgs.count || 10)
+      break
 
     case 'request_send_email': {
       const { to, subject, body, context } = toolArgs
 
       if (!isValidEmail(to)) {
-        return {
+        result = {
           error: `Invalid recipient email address: "${to}". Please fetch the emails first to get the exact sender email address, then try again.`
         }
+        break
       }
 
-      return await requestSendEmail(
+      result = await requestSendEmail(
         userId,
         user.telegramChatId,
         to,
@@ -49,16 +58,19 @@ export async function executeTool(toolName, toolArgs, userId) {
         context,
         bot
       )
+      break
     }
 
     case 'get_tasks':
-      return await getTasks(userId, toolArgs.maxResults || 10)
+      result = await getTasks(userId, toolArgs.maxResults || 10)
+      break
 
     case 'get_calendar_events':
-      return await getCalendarEvents(userId, toolArgs.days || 7, toolArgs.maxResults || 10)
+      result = await getCalendarEvents(userId, toolArgs.days || 7, toolArgs.maxResults || 10)
+      break
 
     case 'request_create_event':
-      return await requestCreateEvent(
+      result = await requestCreateEvent(
         userId,
         user.telegramChatId,
         toolArgs.title,
@@ -70,9 +82,10 @@ export async function executeTool(toolName, toolArgs, userId) {
         toolArgs.context,
         bot
       )
+      break
 
     case 'request_delete_event':
-      return await requestDeleteEvent(
+      result = await requestDeleteEvent(
         userId,
         user.telegramChatId,
         toolArgs.eventId,
@@ -80,8 +93,24 @@ export async function executeTool(toolName, toolArgs, userId) {
         toolArgs.context,
         bot
       )
+      break
+
+    case 'request_create_task':
+      result = await requestCreateTask(
+        userId,
+        user.telegramChatId,
+        toolArgs.title,
+        toolArgs.dueDate,
+        toolArgs.notes,
+        toolArgs.context,
+        bot
+      )
+      break
 
     default:
-      return { error: `Unknown tool: ${toolName}` }
+      result = { error: `Unknown tool: ${toolName}` }
   }
+
+  console.log(`[LATENCY] tool=${toolName} time=${Date.now() - toolStart}ms`)
+  return result
 }

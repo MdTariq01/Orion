@@ -210,6 +210,99 @@ export async function deleteEvent(user, eventId) {
   console.log(`Calendar event deleted: ${eventId}`)
 }
 
+export async function requestCreateTask(userId, telegramChatId, title, dueDate, notes, context, bot) {
+  try {
+    const actionId = uuidv4()
+
+    const payload = { title, dueDate, notes }
+
+    await PendingAction.create({
+      actionId,
+      userId,
+      type: 'create_task',
+      payload,
+      context
+    })
+
+    const displayDue = dueDate ? `\n*Due:* ${dueDate}` : ''
+    const displayNotes = notes ? `\n*Notes:* ${notes}` : ''
+
+    console.log(`Sending task approval message to ${telegramChatId}`)
+
+    const message = await bot.sendMessage(
+      telegramChatId,
+      `📝 *I want to create this task:*\n\n` +
+      `*Title:* ${title}` +
+      displayDue +
+      displayNotes +
+      `\n\n*Reason:* ${context}\n\n` +
+      `Should I create it?`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [[
+            { text: '✅ Yes, Create', callback_data: `approve_${actionId}` },
+            { text: '❌ No, Cancel', callback_data: `reject_${actionId}` }
+          ]]
+        }
+      }
+    )
+
+    console.log(`Task approval message sent, message_id: ${message.message_id}`)
+
+    await PendingAction.findOneAndUpdate(
+      { actionId },
+      { telegramMessageId: message.message_id }
+    )
+
+    return {
+      status: 'pending_approval',
+      message: 'Task creation request sent to user'
+    }
+  } catch (error) {
+    console.error('requestCreateTask error:', error.message)
+    throw error
+  }
+}
+
+export async function createTask(user, title, dueDate, notes) {
+  const oauth2Client = getOAuthClient()
+  oauth2Client.setCredentials({
+    access_token: user.googleAccessToken,
+    refresh_token: user.googleRefreshToken
+  })
+
+  const { credentials } = await oauth2Client.refreshAccessToken()
+  oauth2Client.setCredentials(credentials)
+  await User.findOneAndUpdate({ userId: user.userId }, { googleAccessToken: credentials.access_token })
+
+  const tasks = google.tasks({ version: 'v1', auth: oauth2Client })
+
+  // get the default task list
+  const listRes = await tasks.tasklists.list({ maxResults: 1 })
+  const taskLists = listRes.data.items || []
+  
+  if (taskLists.length === 0) {
+    throw new Error('No default task list found. Please create one in Google Tasks first.')
+  }
+
+  const taskListId = taskLists[0].id
+
+  const task = {
+    title: title,
+    notes: notes || undefined,
+    due: dueDate ? new Date(dueDate).toISOString() : undefined
+  }
+
+  const response = await tasks.tasks.insert({
+    tasklist: taskListId,
+    requestBody: task
+  })
+
+  console.log(`Task created: ${title}${dueDate ? ' due ' + dueDate : ''}`)
+  return response.data
+}
+
 export async function getTasks(userId, maxResults = 10) {
   try {
     const user = await User.findOne({ userId })
